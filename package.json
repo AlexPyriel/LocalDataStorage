@@ -1,0 +1,20 @@
+{
+  "name": "com.gdf.local-data-storage",
+  "version": "1.0.0",
+  "displayName": "GDF Local Data Storage",
+  "description": "Local game data storage abstractions and runtime services for Unity projects.",
+  "unity": "6000.0",
+  "author": {
+    "name": "GDF"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlexPyriel/LocalDataStorage.git"
+  },
+  "keywords": [
+    "save",
+    "storage",
+    "local",
+    "playerprefs"
+  ]
+}

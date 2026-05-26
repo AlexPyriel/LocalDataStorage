@@ -1,0 +1,21 @@
+{
+    "name": "GDF.LocalDataStorage.Tests.EditMode",
+    "rootNamespace": "",
+    "references": [
+        "GDF.LocalDataStorage"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false,
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ]
+}

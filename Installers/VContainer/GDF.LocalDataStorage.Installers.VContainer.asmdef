@@ -1,0 +1,24 @@
+{
+    "name": "GDF.LocalDataStorage.Installers.VContainer",
+    "references": [
+        "GDF.LocalDataStorage",
+        "VContainer"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "LOCAL_DATA_STORAGE_VCONTAINER"
+    ],
+    "versionDefines": [
+        {
+            "name": "jp.hadashikick.vcontainer",
+            "expression": "",
+            "define": "LOCAL_DATA_STORAGE_VCONTAINER"
+        }
+    ],
+    "noEngineReferences": false
+}

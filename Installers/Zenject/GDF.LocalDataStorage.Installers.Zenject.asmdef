@@ -1,0 +1,24 @@
+{
+    "name": "GDF.LocalDataStorage.Installers.Zenject",
+    "references": [
+        "GDF.LocalDataStorage",
+        "Zenject"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "LOCAL_DATA_STORAGE_ZENJECT"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.mathijsbakker.extenject",
+            "expression": "",
+            "define": "LOCAL_DATA_STORAGE_ZENJECT"
+        }
+    ],
+    "noEngineReferences": false
+}
