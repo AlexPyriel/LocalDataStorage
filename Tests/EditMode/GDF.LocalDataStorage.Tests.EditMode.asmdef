@@ -2,7 +2,9 @@
     "name": "GDF.LocalDataStorage.Tests.EditMode",
     "rootNamespace": "",
     "references": [
-        "GDF.LocalDataStorage"
+        "GDF.LocalDataStorage",
+        "UniTask",
+        "Unity.Nuget.Newtonsoft-Json"
     ],
     "includePlatforms": [
         "Editor"

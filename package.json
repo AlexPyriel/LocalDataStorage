@@ -1,8 +1,8 @@
 {
   "name": "com.gdf.local-data-storage",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "displayName": "GDF Local Data Storage",
-  "description": "Local game data storage abstractions and runtime services for Unity projects.",
+  "description": "Typed, encrypted local data storage for Unity. Pluggable backends (PlayerPrefs / crash-safe file), slot-aware keys, schema migrations, change events, synchronous and UniTask-based async APIs, DI installers for VContainer / Zenject / Reflex.",
   "unity": "6000.0",
   "author": {
     "name": "GDF"
@@ -11,10 +11,18 @@
     "type": "git",
     "url": "https://github.com/AlexPyriel/LocalDataStorage.git"
   },
+  "dependencies": {
+    "com.cysharp.unitask": "2.5.0",
+    "com.unity.nuget.newtonsoft-json": "3.2.2"
+  },
   "keywords": [
     "save",
     "storage",
     "local",
-    "playerprefs"
+    "playerprefs",
+    "file",
+    "atomic",
+    "migrations",
+    "slots"
   ]
 }

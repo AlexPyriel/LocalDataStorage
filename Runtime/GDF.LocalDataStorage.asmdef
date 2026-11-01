@@ -1,6 +1,9 @@
 {
     "name": "GDF.LocalDataStorage",
-    "references": [],
+    "references": [
+        "UniTask",
+        "Unity.Nuget.Newtonsoft-Json"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,

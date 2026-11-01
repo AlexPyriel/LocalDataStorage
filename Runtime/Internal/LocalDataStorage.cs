@@ -1,226 +1,276 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
+using Cysharp.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace LocalDataStorage.Internal
 {
+    /// <summary>
+    /// Orchestrates typed save/load through pluggable <see cref="IStorageBackend"/> implementations,
+    /// optional AES encryption, slot-aware keying, schema migrations and change events.
+    /// </summary>
     internal sealed class LocalDataStorage : ILocalDataStorage
     {
-        private readonly Dictionary<string, LocalData> _loadedData = new();
+        private const string KEY_SLOT_SEPARATOR = ":";
 
-        private const string PASS_PHRASE = "LocalDataStorage";
-        private const string KEY_REGISTRY_PREFS_KEY = "LocalDataStorage.__keys";
-        private const int KEY_SIZE_BITS = 256;
-        private const int KEY_SIZE_BYTES = KEY_SIZE_BITS / 8;
-        private const int BLOCK_SIZE_BITS = 256;
-        private const int SALT_SIZE_BYTES = KEY_SIZE_BYTES;
-        private const int IV_SIZE_BYTES = KEY_SIZE_BYTES;
-        private const int ENCRYPTION_HEADER_SIZE_BYTES = SALT_SIZE_BYTES + IV_SIZE_BYTES;
-        private const int RANDOM_ENTROPY_SIZE_BYTES = 32;
-        private const int DERIVATION_ITERATIONS = 1000;
+        private readonly LocalDataStorageConfig _config;
+        private readonly IStorageBackend _playerPrefsBackend;
+        private readonly IStorageBackend _fileBackend;
+        private readonly EncryptionService _encryption;
+        private readonly MigrationRegistry _migrations;
+        private readonly Dictionary<string, LocalData> _cache = new();
 
-        public void Save<TData>(TData data) where TData : LocalData
+        public event Action<Type> DataSaved;
+        public event Action<Type> DataDeleted;
+        public event Action AllDeleted;
+
+        public LocalDataStorage() : this(LocalDataStorageConfig.Default()) { }
+
+        public LocalDataStorage(LocalDataStorageConfig config)
         {
-            string key = GetKey<TData>();
-            string encrypted = null;
-
-            if (data != null)
-            {
-                string json = JsonUtility.ToJson(data);
-                encrypted = Encrypt(json, PASS_PHRASE);
-            }
-
-            PlayerPrefs.SetString(key, encrypted);
-            RegisterKey(key);
-            _loadedData[key] = data;
+            _config = config ?? throw new ArgumentNullException(nameof(config));
+            _playerPrefsBackend = new PlayerPrefsStorageBackend();
+            _fileBackend = new FileStorageBackend(ResolveFileRoot(config));
+            _encryption = config.EncryptionEnabled ? new EncryptionService(config.PassPhrase) : null;
+            _migrations = new MigrationRegistry();
         }
 
-        public bool TryLoad<TData>(out TData data) where TData : LocalData
+        public void Save<TData>(TData data) where TData : LocalData => Save("", data);
+
+        public void Save<TData>(string slot, TData data) where TData : LocalData
         {
-            string key = GetKey<TData>();
-
-            if (_loadedData.TryGetValue(key, out LocalData cachedData))
-            {
-                data = cachedData as TData;
-                return data != null;
-            }
-
-            string encrypted = PlayerPrefs.GetString(key);
-            if (string.IsNullOrEmpty(encrypted))
-            {
-                _loadedData[key] = null;
-                data = null;
-                return false;
-            }
-
-            try
-            {
-                string json = Decrypt(encrypted, PASS_PHRASE);
-                TData loadedData = JsonUtility.FromJson<TData>(json);
-                _loadedData[key] = loadedData;
-                data = loadedData;
-                return loadedData != null;
-            }
-            catch (Exception exception)
-            {
-                Debug.LogError($"{nameof(LocalDataStorage)} Failed to load data for key '{key}'.\n{exception}");
-                _loadedData[key] = null;
-                data = null;
-                return false;
-            }
+            SaveInternal(typeof(TData), slot ?? string.Empty, data);
         }
 
-        public void Delete<TData>() where TData : LocalData
+        public bool TryLoad<TData>(out TData data) where TData : LocalData => TryLoad("", out data);
+
+        public bool TryLoad<TData>(string slot, out TData data) where TData : LocalData
         {
-            string key = GetKey<TData>();
-            PlayerPrefs.DeleteKey(key);
-            UnregisterKey(key);
-            _loadedData.Remove(key);
+            data = (TData)LoadInternal(typeof(TData), slot ?? string.Empty);
+            return data != null;
+        }
+
+        public void Delete<TData>() where TData : LocalData => Delete<TData>("");
+
+        public void Delete<TData>(string slot) where TData : LocalData
+        {
+            Type type = typeof(TData);
+            string key = BuildKey(type, slot ?? string.Empty);
+            PickBackend(type).Delete(key);
+            _cache.Remove(key);
+            DataDeleted?.Invoke(type);
+        }
+
+        public IEnumerable<string> ListSlots<TData>() where TData : LocalData
+        {
+            Type type = typeof(TData);
+            string prefix = type.FullName;
+            IStorageBackend backend = PickBackend(type);
+
+            foreach (string key in backend.EnumerateKeys())
+            {
+                if (!key.StartsWith(prefix, StringComparison.Ordinal))
+                    continue;
+
+                if (key.Length == prefix.Length)
+                {
+                    yield return string.Empty;
+                    continue;
+                }
+
+                if (key[prefix.Length] != KEY_SLOT_SEPARATOR[0])
+                    continue;
+
+                yield return key.Substring(prefix.Length + 1);
+            }
         }
 
         public void DeleteAll()
         {
-            foreach (string key in GetRegisteredKeys())
-            {
-                PlayerPrefs.DeleteKey(key);
-            }
-
-            PlayerPrefs.DeleteKey(KEY_REGISTRY_PREFS_KEY);
-            _loadedData.Clear();
+            _playerPrefsBackend.DeleteAll();
+            _fileBackend.DeleteAll();
+            _cache.Clear();
+            AllDeleted?.Invoke();
         }
 
-        private static void RegisterKey(string key)
+        public UniTask SaveAsync<TData>(TData data, CancellationToken cancellationToken = default) where TData : LocalData =>
+            SaveAsync("", data, cancellationToken);
+
+        public async UniTask SaveAsync<TData>(string slot, TData data, CancellationToken cancellationToken = default) where TData : LocalData
         {
-            HashSet<string> keys = GetRegisteredKeys();
-            if (!keys.Add(key))
+            await UniTask.RunOnThreadPool(() => SaveInternal(typeof(TData), slot ?? string.Empty, data), configureAwait: true, cancellationToken: cancellationToken);
+        }
+
+        public UniTask<(bool Found, TData Data)> TryLoadAsync<TData>(CancellationToken cancellationToken = default) where TData : LocalData =>
+            TryLoadAsync<TData>("", cancellationToken);
+
+        public async UniTask<(bool Found, TData Data)> TryLoadAsync<TData>(string slot, CancellationToken cancellationToken = default) where TData : LocalData
+        {
+            TData loaded = await UniTask.RunOnThreadPool(
+                () => (TData)LoadInternal(typeof(TData), slot ?? string.Empty),
+                configureAwait: true,
+                cancellationToken: cancellationToken);
+            return (loaded != null, loaded);
+        }
+
+        public async UniTask DeleteAsync<TData>(string slot = "", CancellationToken cancellationToken = default) where TData : LocalData
+        {
+            await UniTask.RunOnThreadPool(() => Delete<TData>(slot), configureAwait: true, cancellationToken: cancellationToken);
+        }
+
+        public async UniTask DeleteAllAsync(CancellationToken cancellationToken = default)
+        {
+            await UniTask.RunOnThreadPool(DeleteAll, configureAwait: true, cancellationToken: cancellationToken);
+        }
+
+        // ---------- internals ----------
+
+        private void SaveInternal(Type type, string slot, LocalData data)
+        {
+            string key = BuildKey(type, slot);
+            IStorageBackend backend = PickBackend(type);
+
+            if (data == null)
             {
+                backend.Delete(key);
+                _cache.Remove(key);
+                DataDeleted?.Invoke(type);
                 return;
             }
 
-            SaveRegisteredKeys(keys);
+            byte[] bytes = SerializePayload(type, data);
+            backend.Write(key, bytes);
+            _cache[key] = data;
+            DataSaved?.Invoke(type);
         }
 
-        private static void UnregisterKey(string key)
+        private LocalData LoadInternal(Type type, string slot)
         {
-            HashSet<string> keys = GetRegisteredKeys();
-            if (!keys.Remove(key))
+            string key = BuildKey(type, slot);
+            if (_cache.TryGetValue(key, out LocalData cached))
+                return cached;
+
+            IStorageBackend backend = PickBackend(type);
+            byte[] raw = backend.Read(key);
+            if (raw == null || raw.Length == 0)
             {
-                return;
+                _cache[key] = null;
+                return null;
             }
 
-            SaveRegisteredKeys(keys);
+            try
+            {
+                LocalData loaded = DeserializePayload(type, raw);
+                _cache[key] = loaded;
+                return loaded;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[LocalDataStorage] Failed to load '{key}': {ex}");
+                _cache[key] = null;
+                return null;
+            }
         }
 
-        private static HashSet<string> GetRegisteredKeys()
+        private byte[] SerializePayload(Type type, LocalData data)
         {
-            string serializedKeys = PlayerPrefs.GetString(KEY_REGISTRY_PREFS_KEY);
-            if (string.IsNullOrEmpty(serializedKeys))
-            {
-                return new HashSet<string>();
-            }
+            int version = MigrationRegistry.GetCurrentVersion(type);
+            string json = JsonUtility.ToJson(data);
+            byte[] jsonBytes = Encoding.UTF8.GetBytes(json);
 
-            KeyRegistryData registry = JsonUtility.FromJson<KeyRegistryData>(serializedKeys);
-            if (registry?.Keys == null || registry.Keys.Length == 0)
-            {
-                return new HashSet<string>();
-            }
+            // Payload layout (plaintext): [4-byte LE int version][json bytes]
+            byte[] withPrefix = new byte[4 + jsonBytes.Length];
+            WriteInt32LE(withPrefix, 0, version);
+            Buffer.BlockCopy(jsonBytes, 0, withPrefix, 4, jsonBytes.Length);
 
-            return new HashSet<string>(registry.Keys);
+            return _encryption != null ? _encryption.Encrypt(withPrefix) : withPrefix;
         }
 
-        private static void SaveRegisteredKeys(HashSet<string> keys)
+        private LocalData DeserializePayload(Type type, byte[] raw)
         {
-            if (keys.Count == 0)
+            byte[] plain = _encryption != null ? _encryption.Decrypt(raw) : raw;
+
+            int version;
+            string json;
+
+            if (LooksLikeLegacyJson(plain))
             {
-                PlayerPrefs.DeleteKey(KEY_REGISTRY_PREFS_KEY);
-                return;
+                // v1 payload without version prefix. Treat as schema version 1.
+                version = 1;
+                json = Encoding.UTF8.GetString(plain);
+            }
+            else
+            {
+                version = ReadInt32LE(plain, 0);
+                json = Encoding.UTF8.GetString(plain, 4, plain.Length - 4);
             }
 
-            KeyRegistryData registry = new()
+            int currentVersion = MigrationRegistry.GetCurrentVersion(type);
+            if (version < currentVersion)
             {
-                Keys = keys.OrderBy(value => value).ToArray(),
+                JObject payload = JObject.Parse(json);
+                payload = _migrations.Migrate(type, version, payload);
+                json = payload.ToString();
+            }
+            else if (version > currentVersion)
+            {
+                Debug.LogWarning($"[LocalDataStorage] Save for {type.Name} is at v{version} but the current schema is v{currentVersion}. Loading as-is; forward migrations are not supported.");
+            }
+
+            return (LocalData)JsonUtility.FromJson(json, type);
+        }
+
+        private IStorageBackend PickBackend(Type type)
+        {
+            BackendType backend = _config.DefaultBackend;
+            object[] attrs = type.GetCustomAttributes(typeof(StorageAttribute), inherit: false);
+            if (attrs.Length > 0)
+                backend = ((StorageAttribute)attrs[0]).Backend;
+
+            return backend switch
+            {
+                BackendType.File => _fileBackend,
+                _ => _playerPrefsBackend,
             };
-
-            PlayerPrefs.SetString(KEY_REGISTRY_PREFS_KEY, JsonUtility.ToJson(registry));
         }
 
-        private static string GetKey<TData>() where TData : LocalData
+        private static string BuildKey(Type type, string slot)
         {
-            return typeof(TData).ToString();
+            return string.IsNullOrEmpty(slot) ? type.FullName : type.FullName + KEY_SLOT_SEPARATOR + slot;
         }
 
-        private static string Encrypt(string plainText, string passPhrase)
+        private static string ResolveFileRoot(LocalDataStorageConfig config)
         {
-            byte[] saltBytes = GenerateRandomBytes();
-            byte[] ivBytes = GenerateRandomBytes();
-            byte[] plainTextBytes = Encoding.UTF8.GetBytes(plainText);
+            if (!string.IsNullOrEmpty(config.FileAbsoluteRoot))
+                return config.FileAbsoluteRoot;
 
-            using Rfc2898DeriveBytes password = new(passPhrase, saltBytes, DERIVATION_ITERATIONS);
-            byte[] keyBytes = password.GetBytes(KEY_SIZE_BYTES);
-
-            using RijndaelManaged symmetricKey = new();
-            symmetricKey.BlockSize = BLOCK_SIZE_BITS;
-            symmetricKey.Mode = CipherMode.CBC;
-            symmetricKey.Padding = PaddingMode.PKCS7;
-
-            using ICryptoTransform encryptor = symmetricKey.CreateEncryptor(keyBytes, ivBytes);
-            using MemoryStream memoryStream = new();
-            using (CryptoStream cryptoStream = new(memoryStream, encryptor, CryptoStreamMode.Write))
-            {
-                cryptoStream.Write(plainTextBytes, 0, plainTextBytes.Length);
-                cryptoStream.FlushFinalBlock();
-            }
-
-            byte[] cipherTextBytes = saltBytes
-                .Concat(ivBytes)
-                .Concat(memoryStream.ToArray())
-                .ToArray();
-
-            return Convert.ToBase64String(cipherTextBytes);
+            string sub = string.IsNullOrEmpty(config.FileSubPath) ? LocalDataStorageConfig.DEFAULT_FILE_SUB_PATH : config.FileSubPath;
+            return Path.Combine(Application.persistentDataPath, sub);
         }
 
-        private static string Decrypt(string cipherText, string passPhrase)
+        private static bool LooksLikeLegacyJson(byte[] bytes)
         {
-            byte[] cipherTextBytesWithSaltAndIv = Convert.FromBase64String(cipherText);
-            byte[] saltBytes = cipherTextBytesWithSaltAndIv.Take(SALT_SIZE_BYTES).ToArray();
-            byte[] ivBytes = cipherTextBytesWithSaltAndIv.Skip(SALT_SIZE_BYTES).Take(IV_SIZE_BYTES).ToArray();
-            byte[] cipherTextBytes = cipherTextBytesWithSaltAndIv
-                .Skip(ENCRYPTION_HEADER_SIZE_BYTES)
-                .Take(cipherTextBytesWithSaltAndIv.Length - ENCRYPTION_HEADER_SIZE_BYTES)
-                .ToArray();
-
-            using Rfc2898DeriveBytes password = new(passPhrase, saltBytes, DERIVATION_ITERATIONS);
-            byte[] keyBytes = password.GetBytes(KEY_SIZE_BYTES);
-
-            using RijndaelManaged symmetricKey = new();
-            symmetricKey.BlockSize = BLOCK_SIZE_BITS;
-            symmetricKey.Mode = CipherMode.CBC;
-            symmetricKey.Padding = PaddingMode.PKCS7;
-
-            using ICryptoTransform decryptor = symmetricKey.CreateDecryptor(keyBytes, ivBytes);
-            using MemoryStream memoryStream = new(cipherTextBytes);
-            using CryptoStream cryptoStream = new(memoryStream, decryptor, CryptoStreamMode.Read);
-            using StreamReader streamReader = new(cryptoStream, Encoding.UTF8);
-
-            return streamReader.ReadToEnd();
+            if (bytes.Length == 0) return false;
+            byte first = bytes[0];
+            // JSON always starts with '{', '[', or whitespace; versioned payload starts with a low-byte int (v1..v9 → 0x01..0x09 → not whitespace or '{'/'[').
+            return first == 0x7B /* '{' */ || first == 0x5B /* '[' */ || first == 0x20 || first == 0x09 || first == 0x0A || first == 0x0D;
         }
 
-        private static byte[] GenerateRandomBytes()
+        private static void WriteInt32LE(byte[] buffer, int offset, int value)
         {
-            byte[] bytes = new byte[RANDOM_ENTROPY_SIZE_BYTES];
-            using RNGCryptoServiceProvider rng = new();
-            rng.GetBytes(bytes);
-            return bytes;
+            buffer[offset + 0] = (byte)(value & 0xFF);
+            buffer[offset + 1] = (byte)((value >> 8) & 0xFF);
+            buffer[offset + 2] = (byte)((value >> 16) & 0xFF);
+            buffer[offset + 3] = (byte)((value >> 24) & 0xFF);
         }
 
-        [Serializable]
-        private sealed class KeyRegistryData
+        private static int ReadInt32LE(byte[] buffer, int offset)
         {
-            public string[] Keys;
+            return buffer[offset] | (buffer[offset + 1] << 8) | (buffer[offset + 2] << 16) | (buffer[offset + 3] << 24);
         }
     }
 }

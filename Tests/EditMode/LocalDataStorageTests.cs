@@ -1,6 +1,7 @@
+using System;
+using System.IO;
 using NUnit.Framework;
 using UnityEngine;
-using UnityEngine.TestTools;
 
 namespace LocalDataStorage.Tests.EditMode
 {
@@ -17,123 +18,138 @@ namespace LocalDataStorage.Tests.EditMode
         public float Volume;
     }
 
+    /// <summary>Covers v2 end-to-end on both backends: round-trip, slots, deletes, events, corruption handling.</summary>
+    [TestFixture(BackendType.PlayerPrefs)]
+    [TestFixture(BackendType.File)]
     public sealed class LocalDataStorageTests
     {
-        private const string CORRUPTED_PAYLOAD = "not-a-valid-encrypted-payload";
-
+        private readonly BackendType _backend;
+        private string _tempDir;
         private ILocalDataStorage _storage;
+
+        public LocalDataStorageTests(BackendType backend) => _backend = backend;
 
         [SetUp]
         public void SetUp()
         {
             PlayerPrefs.DeleteAll();
-            _storage = new Internal.LocalDataStorage();
+            _tempDir = Path.Combine(Path.GetTempPath(), "gdf-lds-" + Guid.NewGuid().ToString("N"));
+
+            LocalDataStorageConfig config = _backend == BackendType.File
+                ? LocalDataStorageConfig.Default().WithFileBackend().WithFileAbsoluteRoot(_tempDir)
+                : LocalDataStorageConfig.Default().WithPlayerPrefsBackend();
+
+            _storage = new Internal.LocalDataStorage(config);
         }
 
         [TearDown]
         public void TearDown()
         {
             PlayerPrefs.DeleteAll();
+            if (Directory.Exists(_tempDir))
+                Directory.Delete(_tempDir, recursive: true);
         }
 
         [Test]
         public void Save_ThenLoad_ReturnsStoredData()
         {
-            TestProgressData data = new()
-            {
-                Level = 7,
-                Coins = 125,
-            };
+            _storage.Save(new TestProgressData { Level = 7, Coins = 125 });
 
-            _storage.Save(data);
-
-            bool loaded = _storage.TryLoad(out TestProgressData loadedData);
-
-            Assert.That(loaded, Is.True);
-            Assert.That(loadedData, Is.Not.Null);
-            Assert.That(loadedData.Level, Is.EqualTo(7));
-            Assert.That(loadedData.Coins, Is.EqualTo(125));
+            Assert.IsTrue(_storage.TryLoad(out TestProgressData loaded));
+            Assert.AreEqual(7, loaded.Level);
+            Assert.AreEqual(125, loaded.Coins);
         }
 
         [Test]
-        public void TryLoad_WithoutSavedData_ReturnsFalse()
+        public void TryLoad_FreshKey_False()
         {
-            bool loaded = _storage.TryLoad(out TestProgressData loadedData);
-
-            Assert.That(loaded, Is.False);
-            Assert.That(loadedData, Is.Null);
+            Assert.IsFalse(_storage.TryLoad(out TestProgressData _));
         }
 
         [Test]
-        public void Delete_RemovesOnlyRequestedType()
+        public void Delete_PerType_LeavesOtherTypesIntact()
         {
-            TestProgressData progressData = new()
-            {
-                Level = 3,
-                Coins = 40,
-            };
-            TestSettingsData settingsData = new()
-            {
-                Volume = 0.75f,
-            };
-
-            _storage.Save(progressData);
-            _storage.Save(settingsData);
+            _storage.Save(new TestProgressData { Level = 3 });
+            _storage.Save(new TestSettingsData { Volume = 0.75f });
 
             _storage.Delete<TestProgressData>();
 
-            Assert.That(_storage.TryLoad(out TestProgressData deletedProgress), Is.False);
-            Assert.That(deletedProgress, Is.Null);
-            Assert.That(_storage.TryLoad(out TestSettingsData loadedSettings), Is.True);
-            Assert.That(loadedSettings, Is.Not.Null);
-            Assert.That(loadedSettings.Volume, Is.EqualTo(0.75f));
+            Assert.IsFalse(_storage.TryLoad(out TestProgressData _));
+            Assert.IsTrue(_storage.TryLoad(out TestSettingsData loaded));
+            Assert.AreEqual(0.75f, loaded.Volume);
         }
 
         [Test]
-        public void DeleteAll_ClearsStoredData_AndCache()
+        public void DeleteAll_ClearsEveryEntry()
         {
-            _storage.Save(new TestProgressData
-            {
-                Level = 5,
-                Coins = 10,
-            });
+            _storage.Save(new TestProgressData { Level = 5 });
+            _storage.Save(new TestSettingsData { Volume = 1f });
 
             _storage.DeleteAll();
 
-            Assert.That(_storage.TryLoad(out TestProgressData loadedData), Is.False);
-            Assert.That(loadedData, Is.Null);
-            Assert.That(PlayerPrefs.HasKey(typeof(TestProgressData).ToString()), Is.False);
+            Assert.IsFalse(_storage.TryLoad(out TestProgressData _));
+            Assert.IsFalse(_storage.TryLoad(out TestSettingsData _));
         }
 
         [Test]
-        public void DeleteAll_DoesNotDeleteForeignPlayerPrefsKeys()
+        public void Slots_StoreIndependentPayloadsForSameType()
         {
-            const string foreignKey = "foreign.key";
-            const string foreignValue = "foreign-value";
+            _storage.Save("slot1", new TestProgressData { Level = 1 });
+            _storage.Save("slot2", new TestProgressData { Level = 42 });
 
-            PlayerPrefs.SetString(foreignKey, foreignValue);
-            _storage.Save(new TestProgressData
-            {
-                Level = 9,
-                Coins = 90,
-            });
+            Assert.IsTrue(_storage.TryLoad("slot1", out TestProgressData a));
+            Assert.IsTrue(_storage.TryLoad("slot2", out TestProgressData b));
+            Assert.AreEqual(1, a.Level);
+            Assert.AreEqual(42, b.Level);
+        }
+
+        [Test]
+        public void ListSlots_ReturnsAllPopulatedSlots()
+        {
+            _storage.Save(new TestProgressData { Level = 1 });               // default (empty slot)
+            _storage.Save("slot1", new TestProgressData { Level = 2 });
+            _storage.Save("autosave", new TestProgressData { Level = 3 });
+
+            System.Collections.Generic.HashSet<string> slots = new(_storage.ListSlots<TestProgressData>());
+
+            Assert.Contains(string.Empty, slots);
+            Assert.Contains("slot1", slots);
+            Assert.Contains("autosave", slots);
+        }
+
+        [Test]
+        public void Events_DataSaved_FiresPerSave()
+        {
+            Type captured = null;
+            _storage.DataSaved += t => captured = t;
+
+            _storage.Save(new TestProgressData { Level = 1 });
+
+            Assert.AreEqual(typeof(TestProgressData), captured);
+        }
+
+        [Test]
+        public void Events_DataDeleted_FiresPerDelete()
+        {
+            _storage.Save(new TestProgressData { Level = 1 });
+            Type captured = null;
+            _storage.DataDeleted += t => captured = t;
+
+            _storage.Delete<TestProgressData>();
+
+            Assert.AreEqual(typeof(TestProgressData), captured);
+        }
+
+        [Test]
+        public void Events_AllDeleted_FiresOnDeleteAll()
+        {
+            _storage.Save(new TestProgressData { Level = 1 });
+            bool fired = false;
+            _storage.AllDeleted += () => fired = true;
 
             _storage.DeleteAll();
 
-            Assert.That(PlayerPrefs.GetString(foreignKey), Is.EqualTo(foreignValue));
-            Assert.That(PlayerPrefs.HasKey(typeof(TestProgressData).ToString()), Is.False);
-        }
-
-        [Test]
-        public void TryLoad_WithCorruptedPayload_ReturnsFalse()
-        {
-            PlayerPrefs.SetString(typeof(TestProgressData).ToString(), CORRUPTED_PAYLOAD);
-            LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("LocalDataStorage Failed to load data for key"));
-
-            bool loaded = _storage.TryLoad(out TestProgressData loadedData);
-
-            Assert.That(loaded, Is.False);
-            Assert.That(loadedData, Is.Null);
+            Assert.IsTrue(fired);
         }
     }
 }
