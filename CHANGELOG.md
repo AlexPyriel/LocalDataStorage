@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.0.0] - 2026-11-06
+
+Breaking release for projects on Zenject or Reflex. VContainer projects upgrade with no code changes.
+
+### Changed
+
+- `LocalDataStorage.Internal.LocalDataStorage` is `public sealed`, so any DI container can bind it.
+
+### Removed
+
+- Zenject installer (`LocalDataStorageZenjectInstaller`) and Reflex installer
+  (`LocalDataStorageReflexInstaller`). The README section "Using with Zenject / Reflex" shows the
+  replacement bindings.
+
 ## [2.0.0] - 2026-11-01
 
 Breaking release. Keeps the v1 synchronous API intact — single-arg

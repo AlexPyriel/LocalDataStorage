@@ -2,7 +2,7 @@
 
 Typed, encrypted local data storage for Unity. Pluggable backends (PlayerPrefs or crash-safe file),
 slot-aware keys, schema migrations, change events, synchronous and UniTask-based async APIs,
-DI installers for VContainer / Zenject / Reflex.
+a VContainer installer, and public implementation types for any other DI container.
 
 Package name: `com.gdf.local-data-storage`
 Assembly name: `GDF.LocalDataStorage`
@@ -26,7 +26,7 @@ Assembly name: `GDF.LocalDataStorage`
   thread pool.
 - **AES-256 encryption** at rest with per-entry salt and IV, PBKDF2 key derivation. Opt-out via
   `.WithoutEncryption()` for debug workflows.
-- **Fluent installer configuration** on VContainer / Zenject / Reflex.
+- **Fluent VContainer installer configuration**; Zenject and Reflex bind the public types directly.
 - Backward-compatible with v1.0.0 PlayerPrefs saves — reads legacy payloads automatically.
 
 ## Requirements
@@ -34,10 +34,7 @@ Assembly name: `GDF.LocalDataStorage`
 - Unity `6000.0+`
 - `com.cysharp.unitask`
 - `com.unity.nuget.newtonsoft-json`
-- One of the supported DI containers (optional, required only when using the matching installer):
-  - `jp.hadashikick.vcontainer`
-  - `com.mathijsbakker.extenject`
-  - `com.gustavopsantos.reflex`
+- `jp.hadashikick.vcontainer` is required only when using the bundled installer.
 - `com.cysharp.r3` is required only when using the `GDF.LocalDataStorage.R3` adapter assembly.
 
 ## Installation (UPM via Git)
@@ -45,7 +42,7 @@ Assembly name: `GDF.LocalDataStorage`
 Add this dependency to `Packages/manifest.json`:
 
 ```json
-"com.gdf.local-data-storage": "https://github.com/AlexPyriel/LocalDataStorage.git#v2.0.0"
+"com.gdf.local-data-storage": "https://github.com/AlexPyriel/LocalDataStorage.git#v3.0.0"
 ```
 
 For development tracking (not recommended for production), use `#main` instead of a tag.
@@ -53,7 +50,7 @@ For development tracking (not recommended for production), use `#main` instead o
 You can also install it from Unity Package Manager:
 
 - `Window -> Package Manager -> + -> Add package from git URL...`
-- `https://github.com/AlexPyriel/LocalDataStorage.git#v2.0.0`
+- `https://github.com/AlexPyriel/LocalDataStorage.git#v3.0.0`
 
 ## Usage
 
@@ -70,6 +67,8 @@ protected override void Configure(IContainerBuilder builder)
         .Install(builder);
 }
 ```
+
+Other DI containers bind the public types directly (see [Using with Zenject / Reflex](#using-with-zenject--reflex)).
 
 ### 2. Define a save payload
 
@@ -144,9 +143,28 @@ var (found, data) = await _storage.TryLoadAsync<PlayerData>();
 ## Assembly Definition Notes
 
 `GDF.LocalDataStorage` is the runtime assembly. The R3 bridge lives in a separate assembly
-(`GDF.LocalDataStorage.R3`) so games that do not use R3 incur no reference. DI installers are
-in `GDF.LocalDataStorage.Installers.{VContainer,Zenject,Reflex}` with `InternalsVisibleTo` so
-they can see the `Internal` orchestrator type without widening the public surface.
+(`GDF.LocalDataStorage.R3`) so games that do not use R3 incur no reference. The VContainer
+installer lives in `GDF.LocalDataStorage.Installers.VContainer` and compiles only when
+`jp.hadashikick.vcontainer` is installed. The service implementation (`LocalDataStorage.Internal.LocalDataStorage`)
+is `public sealed`; backends, encryption and the migration registry stay internal.
+
+## Using with Zenject / Reflex
+
+The package ships only a VContainer installer. Other containers bind the public types directly.
+
+Zenject (`MonoInstaller` or `Installer`):
+
+```csharp
+Container.BindInstance(LocalDataStorageConfig.Default().WithFileBackend().WithEncryption("MyGame-v1-salt"));
+Container.Bind<ILocalDataStorage>().To<LocalDataStorage.Internal.LocalDataStorage>().AsSingle();
+```
+
+Reflex (`IInstaller`):
+
+```csharp
+builder.AddSingleton(LocalDataStorageConfig.Default().WithFileBackend().WithEncryption("MyGame-v1-salt"), typeof(LocalDataStorageConfig));
+builder.AddSingleton(typeof(LocalDataStorage.Internal.LocalDataStorage), typeof(ILocalDataStorage));
+```
 
 ## Crash safety
 

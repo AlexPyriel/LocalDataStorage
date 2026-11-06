@@ -112,9 +112,9 @@ namespace LocalDataStorage.Tests.EditMode
 
             System.Collections.Generic.HashSet<string> slots = new(_storage.ListSlots<TestProgressData>());
 
-            Assert.Contains(string.Empty, slots);
-            Assert.Contains("slot1", slots);
-            Assert.Contains("autosave", slots);
+            Assert.IsTrue(slots.Contains(string.Empty), "default slot");
+            Assert.IsTrue(slots.Contains("slot1"), "slot1");
+            Assert.IsTrue(slots.Contains("autosave"), "autosave");
         }
 
         [Test]

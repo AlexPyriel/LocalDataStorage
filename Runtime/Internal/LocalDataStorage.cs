@@ -13,7 +13,7 @@ namespace LocalDataStorage.Internal
     /// Orchestrates typed save/load through pluggable <see cref="IStorageBackend"/> implementations,
     /// optional AES encryption, slot-aware keying, schema migrations and change events.
     /// </summary>
-    internal sealed class LocalDataStorage : ILocalDataStorage
+    public sealed class LocalDataStorage : ILocalDataStorage
     {
         private const string KEY_SLOT_SEPARATOR = ":";
 
@@ -24,12 +24,21 @@ namespace LocalDataStorage.Internal
         private readonly MigrationRegistry _migrations;
         private readonly Dictionary<string, LocalData> _cache = new();
 
+        /// <inheritdoc />
         public event Action<Type> DataSaved;
+        /// <inheritdoc />
         public event Action<Type> DataDeleted;
+        /// <inheritdoc />
         public event Action AllDeleted;
 
+        /// <summary>Creates the storage with <see cref="LocalDataStorageConfig.Default"/> (PlayerPrefs, encrypted).</summary>
         public LocalDataStorage() : this(LocalDataStorageConfig.Default()) { }
 
+        /// <summary>
+        /// Creates the storage for the given configuration. DI containers without a package installer
+        /// (Zenject, Reflex) bind <see cref="ILocalDataStorage"/> to this constructor directly.
+        /// </summary>
+        /// <param name="config">Backend, encryption and file-root settings.</param>
         public LocalDataStorage(LocalDataStorageConfig config)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
@@ -39,23 +48,29 @@ namespace LocalDataStorage.Internal
             _migrations = new MigrationRegistry();
         }
 
+        /// <inheritdoc />
         public void Save<TData>(TData data) where TData : LocalData => Save("", data);
 
+        /// <inheritdoc />
         public void Save<TData>(string slot, TData data) where TData : LocalData
         {
             SaveInternal(typeof(TData), slot ?? string.Empty, data);
         }
 
+        /// <inheritdoc />
         public bool TryLoad<TData>(out TData data) where TData : LocalData => TryLoad("", out data);
 
+        /// <inheritdoc />
         public bool TryLoad<TData>(string slot, out TData data) where TData : LocalData
         {
             data = (TData)LoadInternal(typeof(TData), slot ?? string.Empty);
             return data != null;
         }
 
+        /// <inheritdoc />
         public void Delete<TData>() where TData : LocalData => Delete<TData>("");
 
+        /// <inheritdoc />
         public void Delete<TData>(string slot) where TData : LocalData
         {
             Type type = typeof(TData);
@@ -65,6 +80,7 @@ namespace LocalDataStorage.Internal
             DataDeleted?.Invoke(type);
         }
 
+        /// <inheritdoc />
         public IEnumerable<string> ListSlots<TData>() where TData : LocalData
         {
             Type type = typeof(TData);
@@ -89,6 +105,7 @@ namespace LocalDataStorage.Internal
             }
         }
 
+        /// <inheritdoc />
         public void DeleteAll()
         {
             _playerPrefsBackend.DeleteAll();
@@ -97,17 +114,21 @@ namespace LocalDataStorage.Internal
             AllDeleted?.Invoke();
         }
 
+        /// <inheritdoc />
         public UniTask SaveAsync<TData>(TData data, CancellationToken cancellationToken = default) where TData : LocalData =>
             SaveAsync("", data, cancellationToken);
 
+        /// <inheritdoc />
         public async UniTask SaveAsync<TData>(string slot, TData data, CancellationToken cancellationToken = default) where TData : LocalData
         {
             await UniTask.RunOnThreadPool(() => SaveInternal(typeof(TData), slot ?? string.Empty, data), configureAwait: true, cancellationToken: cancellationToken);
         }
 
+        /// <inheritdoc />
         public UniTask<(bool Found, TData Data)> TryLoadAsync<TData>(CancellationToken cancellationToken = default) where TData : LocalData =>
             TryLoadAsync<TData>("", cancellationToken);
 
+        /// <inheritdoc />
         public async UniTask<(bool Found, TData Data)> TryLoadAsync<TData>(string slot, CancellationToken cancellationToken = default) where TData : LocalData
         {
             TData loaded = await UniTask.RunOnThreadPool(
@@ -117,11 +138,13 @@ namespace LocalDataStorage.Internal
             return (loaded != null, loaded);
         }
 
+        /// <inheritdoc />
         public async UniTask DeleteAsync<TData>(string slot = "", CancellationToken cancellationToken = default) where TData : LocalData
         {
             await UniTask.RunOnThreadPool(() => Delete<TData>(slot), configureAwait: true, cancellationToken: cancellationToken);
         }
 
+        /// <inheritdoc />
         public async UniTask DeleteAllAsync(CancellationToken cancellationToken = default)
         {
             await UniTask.RunOnThreadPool(DeleteAll, configureAwait: true, cancellationToken: cancellationToken);

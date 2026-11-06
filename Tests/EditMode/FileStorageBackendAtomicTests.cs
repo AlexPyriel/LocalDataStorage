@@ -83,8 +83,8 @@ namespace LocalDataStorage.Tests.EditMode
             System.Collections.Generic.HashSet<string> keys = new(_backend.EnumerateKeys());
 
             Assert.AreEqual(2, keys.Count);
-            Assert.Contains("a", keys);
-            Assert.Contains("b", keys);
+            Assert.IsTrue(keys.Contains("a"), "a");
+            Assert.IsTrue(keys.Contains("b"), "b");
         }
     }
 }

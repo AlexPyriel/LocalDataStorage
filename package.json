@@ -1,8 +1,8 @@
 {
   "name": "com.gdf.local-data-storage",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "displayName": "GDF Local Data Storage",
-  "description": "Typed, encrypted local data storage for Unity. Pluggable backends (PlayerPrefs / crash-safe file), slot-aware keys, schema migrations, change events, synchronous and UniTask-based async APIs, DI installers for VContainer / Zenject / Reflex.",
+  "description": "Typed, encrypted local data storage for Unity. Pluggable backends (PlayerPrefs / crash-safe file), slot-aware keys, schema migrations, change events, synchronous and UniTask-based async APIs, VContainer installer; plain public types for other DI containers.",
   "unity": "6000.0",
   "author": {
     "name": "GDF"
